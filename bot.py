@@ -72,14 +72,31 @@ UA = (
 
 
 # ---------------------------------------------------------------------------
-# ذخیره‌سازی ساده روی فایل JSON: id کوتاه -> لینک صفحه‌ی وضعیت پنل
+# ذخیره‌سازی ساده روی فایل JSON:
+#   id کوتاه -> {link, label, clicks, created_at}
 # ---------------------------------------------------------------------------
 
 def _load_db() -> dict:
     if not os.path.exists(DB_PATH):
         return {}
     with open(DB_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        raw = json.load(f)
+
+    # سازگاری با نسخه‌ی قدیمی دیتابیس که فقط short_id -> link بود
+    migrated = False
+    for short_id, value in list(raw.items()):
+        if isinstance(value, str):
+            raw[short_id] = {
+                "link": value,
+                "label": "",
+                "clicks": 0,
+                "created_at": None,
+            }
+            migrated = True
+    if migrated:
+        with open(DB_PATH, "w", encoding="utf-8") as f:
+            json.dump(raw, f, ensure_ascii=False, indent=2)
+    return raw
 
 
 def _save_db(db: dict) -> None:
@@ -87,17 +104,59 @@ def _save_db(db: dict) -> None:
         json.dump(db, f, ensure_ascii=False, indent=2)
 
 
-def save_subscription_link(link: str) -> str:
+def save_subscription_link(link: str, label: str = "") -> str:
     db = _load_db()
     short_id = str(int(time.time() * 1000))[-10:]
-    db[short_id] = link
+    db[short_id] = {
+        "link": link,
+        "label": label,
+        "clicks": 0,
+        "created_at": int(time.time()),
+    }
     _save_db(db)
     return short_id
 
 
 def get_subscription_link(short_id: str) -> Optional[str]:
     db = _load_db()
-    return db.get(short_id)
+    entry = db.get(short_id)
+    if not entry:
+        return None
+    return entry.get("link")
+
+
+def increment_click(short_id: str) -> None:
+    db = _load_db()
+    entry = db.get(short_id)
+    if entry:
+        entry["clicks"] = entry.get("clicks", 0) + 1
+        _save_db(db)
+
+
+def update_post_link(short_id: str, post_link: str) -> None:
+    db = _load_db()
+    entry = db.get(short_id)
+    if entry:
+        entry["post_link"] = post_link
+        _save_db(db)
+
+
+def get_all_stats() -> list:
+    """لیست پست‌ها را مرتب بر اساس تازه‌ترین برمی‌گرداند."""
+    db = _load_db()
+    items = []
+    for short_id, entry in db.items():
+        items.append(
+            {
+                "short_id": short_id,
+                "label": entry.get("label") or "(بدون عنوان)",
+                "clicks": entry.get("clicks", 0),
+                "created_at": entry.get("created_at"),
+                "post_link": entry.get("post_link"),
+            }
+        )
+    items.sort(key=lambda x: x["created_at"] or 0, reverse=True)
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +330,20 @@ async def newpost_receive_vless(update: Update, context: ContextTypes.DEFAULT_TY
     return WAIT_FOR_CAPTION
 
 
+def build_post_link(message_id: int) -> Optional[str]:
+    """
+    از روی CHANNEL_ID لینک قابل‌کلیک خودِ پست را می‌سازد.
+    - کانال پابلیک (@username): https://t.me/username/<id>
+    - کانال پرایوت (-100xxxxxxxxxx): https://t.me/c/xxxxxxxxxx/<id>
+    """
+    if CHANNEL_ID.startswith("@"):
+        return f"https://t.me/{CHANNEL_ID[1:]}/{message_id}"
+    if CHANNEL_ID.startswith("-100"):
+        internal_id = CHANNEL_ID[4:]
+        return f"https://t.me/c/{internal_id}/{message_id}"
+    return None
+
+
 async def newpost_receive_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption_text = update.message.text.strip()
     if caption_text == "پیش‌فرض":
@@ -280,7 +353,11 @@ async def newpost_receive_caption(update: Update, context: ContextTypes.DEFAULT_
 
     status_link = context.user_data.pop("pending_link")
     vless_link = context.user_data.pop("pending_vless")
-    short_id = save_subscription_link(status_link)
+
+    # یک برچسب کوتاه از کپشن برای نمایش در آمار می‌سازیم
+    label_source = caption_text or vless_link
+    label = label_source.splitlines()[0][:40]
+    short_id = save_subscription_link(status_link, label=label)
 
     bot_username = (await context.bot.get_me()).username
     deep_link = f"https://t.me/{bot_username}?start={short_id}"
@@ -291,12 +368,17 @@ async def newpost_receive_caption(update: Update, context: ContextTypes.DEFAULT_
 
     post_text = build_channel_post(caption_text, vless_link)
 
-    await context.bot.send_message(
+    sent_msg = await context.bot.send_message(
         chat_id=CHANNEL_ID,
         text=post_text,
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
     )
+
+    post_link = build_post_link(sent_msg.message_id)
+    if post_link:
+        update_post_link(short_id, post_link)
+
     await update.message.reply_text("✅ پست در کانال منتشر شد.")
     return ConversationHandler.END
 
@@ -305,6 +387,42 @@ async def newpost_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("pending_link", None)
     await update.message.reply_text("لغو شد.")
     return ConversationHandler.END
+
+
+# ---------------------------------------------------------------------------
+# دستور ادمین: /stats — تعداد کلیک هر پست
+# ---------------------------------------------------------------------------
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔️ این دستور فقط برای ادمین است.")
+        return
+
+    items = get_all_stats()
+    if not items:
+        await update.message.reply_text("هنوز هیچ پستی ساخته نشده است.")
+        return
+
+    total_clicks = sum(i["clicks"] for i in items)
+    lines = [f"📊 <b>آمار پست‌ها</b> (مجموع کلیک‌ها: {total_clicks})\n"]
+
+    for i in items:
+        link_line = ""
+        if i.get("post_link"):
+            link_line = f'\n   📎 <a href="{escape_html(i["post_link"])}">مشاهده پست</a>'
+        lines.append(
+            f"• {escape_html(i['label'])}\n"
+            f"   🔗 آیدی: <code>{i['short_id']}</code> — 👆 کلیک: <b>{i['clicks']}</b>"
+            f"{link_line}"
+        )
+
+    text = "\n".join(lines)
+    # تلگرام محدودیت طول پیام دارد؛ اگر خیلی طولانی شد، تکه‌تکه بفرست
+    MAX_LEN = 3500
+    for start_i in range(0, len(text), MAX_LEN):
+        await update.message.reply_text(
+            text[start_i : start_i + MAX_LEN], parse_mode=ParseMode.HTML
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +442,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not link:
         await update.message.reply_text("این لینک معتبر نیست یا منقضی شده است.")
         return
+
+    increment_click(short_id)
 
     wait_msg = await update.message.reply_text("⏳ در حال دریافت اطلاعات اشتراک...")
     try:
@@ -357,6 +477,7 @@ def main():
 
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stats", stats))
 
     logger.info("ربات شروع به کار کرد...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
