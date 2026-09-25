@@ -232,7 +232,7 @@ def build_channel_post(caption: str, vless_link: str, status_deep_link: str) -> 
       یعنی اگر کاراکترهایی مثل <, >, & در آن باشد، پیام خراب نمی‌شود)
     - لینک سرور داخل هم‌زمان quote (<blockquote>) و mono (<code>) تلگرام،
       که هم شکل جعبه‌ای و تمیز می‌دهد و هم با یک تاچ روی لینک کپی می‌شود.
-    - لینک نوشتاری «📊 مشاهده وضعیت اشتراک» (به‌جای دکمه شیشه‌ای)
+    - لینک نوشتاری «📊مشاهده وضعیت کانفیگ: لینک ربات» (به‌جای دکمه شیشه‌ای)
     - خط امضای کانال (اختیاری، آن هم escape می‌شود)
     هر بخش با یک خط خالی از بخش بعدی جدا می‌شود.
     """
@@ -243,7 +243,7 @@ def build_channel_post(caption: str, vless_link: str, status_deep_link: str) -> 
 
     parts = [safe_caption] if safe_caption else []
     parts.append(f"<blockquote><code>{safe_link}</code></blockquote>")
-    parts.append(f'<a href="{safe_status_link}">📊 مشاهده وضعیت اشتراک</a>')
+    parts.append(f'📊مشاهده وضعیت کانفیگ: <a href="{safe_status_link}">لینک ربات</a>')
     if safe_tag:
         parts.append(safe_tag)
     return "\n\n".join(parts)
