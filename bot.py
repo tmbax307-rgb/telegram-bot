@@ -31,7 +31,7 @@ from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -46,8 +46,8 @@ from telegram.ext import (
 # تنظیمات
 # ---------------------------------------------------------------------------
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "PUT-YOUR-BOT-TOKEN-HERE")
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "@your_channel_username")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "PUT-YOUR-BOT-TOKEN-HERE").strip()
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@your_channel_username").strip()
 ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()}
 
 # خط امضای پایین هر پست، مثل «📣 @faultpass». اگر تنظیم نشود و CHANNEL_ID با
@@ -225,21 +225,25 @@ def escape_html(text: str) -> str:
     )
 
 
-def build_channel_post(caption: str, vless_link: str) -> str:
+def build_channel_post(caption: str, vless_link: str, status_deep_link: str) -> str:
     """
     متن نهایی پست کانال را می‌سازد:
     - کپشن دلخواه ادمین (به‌صورت متن ساده در نظر گرفته می‌شود و escape می‌شود؛
       یعنی اگر کاراکترهایی مثل <, >, & در آن باشد، پیام خراب نمی‌شود)
     - لینک سرور داخل هم‌زمان quote (<blockquote>) و mono (<code>) تلگرام،
       که هم شکل جعبه‌ای و تمیز می‌دهد و هم با یک تاچ روی لینک کپی می‌شود.
+    - لینک نوشتاری «📊 مشاهده وضعیت اشتراک» (به‌جای دکمه شیشه‌ای)
     - خط امضای کانال (اختیاری، آن هم escape می‌شود)
+    هر بخش با یک خط خالی از بخش بعدی جدا می‌شود.
     """
     safe_caption = escape_html(caption.strip())
     safe_link = escape_html(vless_link)
     safe_tag = escape_html(CHANNEL_TAG)
+    safe_status_link = escape_html(status_deep_link)
 
     parts = [safe_caption] if safe_caption else []
     parts.append(f"<blockquote><code>{safe_link}</code></blockquote>")
+    parts.append(f'<a href="{safe_status_link}">📊 مشاهده وضعیت اشتراک</a>')
     if safe_tag:
         parts.append(safe_tag)
     return "\n\n".join(parts)
@@ -362,17 +366,12 @@ async def newpost_receive_caption(update: Update, context: ContextTypes.DEFAULT_
     bot_username = (await context.bot.get_me()).username
     deep_link = f"https://t.me/{bot_username}?start={short_id}"
 
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📊 مشاهده وضعیت اشتراک", url=deep_link)]]
-    )
-
-    post_text = build_channel_post(caption_text, vless_link)
+    post_text = build_channel_post(caption_text, vless_link, deep_link)
 
     sent_msg = await context.bot.send_message(
         chat_id=CHANNEL_ID,
         text=post_text,
         parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
     )
 
     post_link = build_post_link(sent_msg.message_id)
